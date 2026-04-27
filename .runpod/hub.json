@@ -64,7 +64,7 @@
           "name": "HuggingFace Token",
           "type": "string",
           "description": "Your HuggingFace API token (required to download GLM-OCR if not pre-cached)",
-          "default": "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",
+          "default": "",
           "advanced": true
         }
       },
