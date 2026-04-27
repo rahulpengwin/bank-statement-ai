@@ -6,146 +6,78 @@ Each job receives a base64-encoded PDF and returns structured JSON.
 
 import runpod
 import base64
-import os
 import tempfile
+import os
 import time
 import logging
-from collections import Counter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-log = logging.getLogger("bank_ai.handler")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(message)s")
+log = logging.getLogger("bank_ai")
 
-# ── Load models ONCE at worker startup ────────────────────────────────────────
-# RunPod keeps the worker alive between jobs (within idle timeout window),
-# so this only runs once per worker lifecycle — not per request.
-log.info("=" * 60)
-log.info("WORKER STARTUP — Loading models...")
-
-from app.parser import load_model, parse_header, parse_transactions, _qwen, _glm_model
-from app.extractor import extract_text, extract_header_text, anonymize_sensitive, restore_sensitive
+# ── Pre-load models at container startup (once per warm worker) ────────────────
+log.info("Cold start: loading llama-cpp model + GLM-OCR...")
+from app.parser import _load_model, parse_header, parse_transactions
+from app.extractor import extract_text
 from app.categorizer import categorize_transactions
 
-load_model()
-log.info("Models loaded ✓ Worker ready.")
-log.info("=" * 60)
-
+_load_model()
+log.info("Models ready ✓")
 
 # ── Handler ────────────────────────────────────────────────────────────────────
 def handler(job):
-    """
-    Input schema:
-    {
-        "input": {
-            "pdf_base64": "<base64 encoded PDF bytes>",
-            "filename": "statement.pdf"   (optional)
-        }
-    }
-
-    Output: full ParseResponse dict (account_details, transactions, summary, timings)
-    """
     job_input = job.get("input", {})
+    pdf_b64   = job_input.get("pdf_base64")
+    filename  = job_input.get("filename", "statement.pdf")
 
-    # ── Input validation ───────────────────────────────────────────────────────
-    pdf_b64 = job_input.get("pdf_base64")
     if not pdf_b64:
-        return {"error": "Missing required field: 'pdf_base64'"}
+        return {"error": "Missing 'pdf_base64' in input. Encode your PDF as base64."}
 
-    filename = job_input.get("filename", "statement.pdf")
-    if not filename.lower().endswith(".pdf"):
-        return {"error": "Only PDF files are supported"}
+    t0 = time.time()
+    pdf_bytes = base64.b64decode(pdf_b64)
 
-    # ── Decode PDF ─────────────────────────────────────────────────────────────
-    try:
-        pdf_bytes = base64.b64decode(pdf_b64)
-    except Exception as e:
-        return {"error": f"Invalid base64 PDF data: {str(e)}"}
-
-    log.info(f"Job received: {filename} ({len(pdf_bytes)/1024:.1f} KB)")
-
-    # ── Write to temp file ─────────────────────────────────────────────────────
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    tmp.write(pdf_bytes)
-    tmp.flush()
-    tmp_path = tmp.name
-    tmp.close()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(pdf_bytes)
+        tmp_path = tmp.name
 
     try:
-        t0 = time.time()
-
-        # Progress update — client can poll and see this
-        runpod.serverless.progress_update(job, "Step 1/4: Extracting PDF text...")
-
+        # Stage 1: PDF extraction
         raw_text = extract_text(tmp_path)
-        header_raw_text = extract_header_text(tmp_path)
         t1 = time.time()
-        log.info(f"Extracted {len(raw_text):,} chars / header {len(header_raw_text):,} chars")
+        log.info(f"Extracted {len(raw_text):,} chars in {t1-t0:.3f}s")
 
-        # Anonymise PAN and mobile numbers before sending to LLM
-        anon_text, restore_map = anonymize_sensitive(raw_text)
-        anon_header_text, restore_map2 = anonymize_sensitive(header_raw_text)
-        restore_map.update(restore_map2)
-
-        runpod.serverless.progress_update(job, "Step 2/4: Parsing account header with Qwen...")
-        acc_details = parse_header(anon_header_text)
-        acc_details = restore_sensitive(acc_details, restore_map)
-
-        runpod.serverless.progress_update(job, "Step 3/4: Running GLM-OCR + Qwen on transactions...")
-        transactions = parse_transactions(anon_text, pdf_path=tmp_path)
-        transactions = [restore_sensitive(t, restore_map) for t in transactions]
+        # Stage 2: LLM parsing (header + transactions)
+        acc_details  = parse_header(raw_text)
+        transactions = parse_transactions(raw_text)
         t2 = time.time()
+        log.info(f"LLM parsed {len(transactions)} txns in {t2-t1:.3f}s")
 
-        runpod.serverless.progress_update(job, "Step 4/4: Categorizing transactions...")
+        # Stage 3: Categorization
         transactions = categorize_transactions(transactions)
-        cats = Counter(t.get("category", "Other") for t in transactions)
-        t3 = time.time()
 
-        # ── Build summary ──────────────────────────────────────────────────────
-        debits, credits = [], []
-        for txn in transactions:
-            try:
-                if txn.get("debit") and str(txn["debit"]).strip():
-                    debits.append(float(txn["debit"]))
-                if txn.get("credit") and str(txn["credit"]).strip():
-                    credits.append(float(txn["credit"]))
-            except (ValueError, TypeError):
-                pass
-
-        total_s = round(time.time() - t0, 3)
-        log.info(f"COMPLETE — {len(transactions)} txns in {total_s}s")
+        debits  = [float(t["debit"])  for t in transactions if t.get("debit")  and str(t["debit"]).strip()]
+        credits = [float(t["credit"]) for t in transactions if t.get("credit") and str(t["credit"]).strip()]
 
         return {
             "account_details": acc_details,
-            "transactions": transactions,
+            "transactions":    transactions,
             "summary": {
                 "total_transactions": len(transactions),
-                "total_debit": round(sum(debits), 2),
-                "total_credit": round(sum(credits), 2),
-                "net_flow": round(sum(credits) - sum(debits), 2),
-                "categories": dict(cats),
+                "total_debit":        round(sum(debits), 2),
+                "total_credit":       round(sum(credits), 2),
+                "net_flow":           round(sum(credits) - sum(debits), 2),
             },
             "source_file": filename,
-            "used_image_mode": True,
+            "used_image_mode": False,
             "timings": {
                 "pdf_extraction_s": round(t1 - t0, 3),
-                "llm_inference_s": round(t2 - t1, 3),
-                "categorization_ms": round((t3 - t2) * 1000, 2),
-                "total_s": total_s,
-            },
+                "llm_inference_s":  round(t2 - t1, 3),
+                "total_s":          round(time.time() - t0, 3),
+            }
         }
-
     except Exception as e:
-        log.error(f"Pipeline failed: {e}", exc_info=True)
+        log.error(f"Handler error: {e}", exc_info=True)
         return {"error": str(e)}
-
     finally:
-        # Always clean up temp file
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        os.unlink(tmp_path)
 
-
-# ── Start serverless worker ────────────────────────────────────────────────────
 runpod.serverless.start({"handler": handler})

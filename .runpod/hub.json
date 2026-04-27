@@ -1,0 +1,129 @@
+{
+  "title": "Bank Statement AI",
+  "description": "AI-powered Indian bank statement parser. Upload a PDF and get structured account details, all transactions with spending categories, and financial summary. Powered by Qwen2.5-Coder-14B GGUF + GLM-OCR.",
+  "type": "serverless",
+  "category": "language",
+  "config": {
+    "runsOn": "GPU",
+    "containerDiskInGb": 20,
+    "gpuCount": 1,
+    "gpuIds": "ADA_24,-NVIDIA GeForce RTX 4090",
+    "allowedCudaVersions": [
+      "12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0"
+    ],
+    "presets": [
+      {
+        "name": "Standard (24GB GPU)",
+        "defaults": {
+          "N_GPU_LAYERS": -1,
+          "N_CTX": 65536,
+          "MAX_NEW_TOKENS": 16384,
+          "MAX_HEADER_CHARS": 8000,
+          "MAX_TXN_CHARS": 48000,
+          "CHUNK_SIZE": 12000,
+          "CHUNK_OVERLAP": 500
+        }
+      },
+      {
+        "name": "Fast / Low VRAM (16GB GPU)",
+        "defaults": {
+          "N_GPU_LAYERS": 30,
+          "N_CTX": 32768,
+          "MAX_NEW_TOKENS": 8192,
+          "MAX_HEADER_CHARS": 4000,
+          "MAX_TXN_CHARS": 24000,
+          "CHUNK_SIZE": 8000,
+          "CHUNK_OVERLAP": 300
+        }
+      }
+    ],
+    "env": [
+      {
+        "key": "MODEL_PATH",
+        "input": {
+          "name": "GGUF Model Path",
+          "type": "string",
+          "description": "Path to the Qwen GGUF model file on your Network Volume",
+          "default": "/runpod-volume/models/qwen2.5-coder-14b-instruct-q4_k_m.gguf",
+          "advanced": false
+        }
+      },
+      {
+        "key": "GLM_OCR_PATH",
+        "input": {
+          "name": "GLM-OCR Model Path",
+          "type": "string",
+          "description": "Path to GLM-OCR model directory for scanned PDFs",
+          "default": "/runpod-volume/models/GLM-OCR",
+          "advanced": true
+        }
+      },
+      {
+        "key": "HF_TOKEN",
+        "input": {
+          "name": "HuggingFace Token",
+          "type": "string",
+          "description": "Your HuggingFace API token (required to download GLM-OCR if not pre-cached)",
+          "default": "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",
+          "advanced": true
+        }
+      },
+      {
+        "key": "N_GPU_LAYERS",
+        "input": {
+          "name": "GPU Layers",
+          "type": "number",
+          "description": "-1 to offload all layers to GPU (recommended for 24GB+ VRAM)",
+          "min": -1,
+          "max": 80,
+          "default": -1,
+          "advanced": true
+        }
+      },
+      {
+        "key": "N_CTX",
+        "input": {
+          "name": "Context Window",
+          "type": "number",
+          "description": "LLM context window size. Larger = more transactions per chunk",
+          "min": 4096,
+          "max": 65536,
+          "default": 65536,
+          "advanced": true
+        }
+      },
+      {
+        "key": "MAX_NEW_TOKENS",
+        "input": {
+          "name": "Max Output Tokens",
+          "type": "number",
+          "description": "Max tokens the LLM generates per inference call",
+          "min": 1024,
+          "max": 16384,
+          "default": 16384,
+          "advanced": true
+        }
+      },
+      {
+        "key": "CHUNK_SIZE",
+        "value": "12000"
+      },
+      {
+        "key": "CHUNK_OVERLAP",
+        "value": "500"
+      },
+      {
+        "key": "PAGE_DPI",
+        "value": "150"
+      },
+      {
+        "key": "GLM_DEVICE",
+        "value": "cuda"
+      },
+      {
+        "key": "PYTORCH_CUDA_ALLOC_CONF",
+        "value": "expandable_segments:True"
+      }
+    ]
+  }
+}

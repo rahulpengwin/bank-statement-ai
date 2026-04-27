@@ -1,0 +1,35 @@
+{
+  "tests": [
+    {
+      "name": "parse_sample_statement",
+      "input": {
+        "pdf_base64": "__REPLACE_WITH_BASE64_OF_SAMPLE_PDF__",
+        "filename": "test_statement.pdf"
+      },
+      "timeout": 120000
+    }
+  ],
+  "config": {
+    "gpuTypeId": "NVIDIA GeForce RTX 3090",
+    "gpuCount": 1,
+    "env": [
+      {
+        "key": "MODEL_PATH",
+        "value": "/runpod-volume/models/qwen2.5-coder-14b-instruct-q4_k_m.gguf"
+      },
+      {
+        "key": "GLM_OCR_PATH",
+        "value": "/runpod-volume/models/GLM-OCR"
+      },
+      {
+        "key": "N_GPU_LAYERS",
+        "value": "-1"
+      },
+      {
+        "key": "N_CTX",
+        "value": "32768"
+      }
+    ],
+    "allowedCudaVersions": ["12.8", "12.7", "12.6", "12.5", "12.4", "12.3", "12.2", "12.1", "12.0"]
+  }
+}
