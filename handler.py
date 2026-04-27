@@ -1,36 +1,43 @@
-"""
-handler.py — RunPod Serverless entrypoint for Bank Statement AI
-Models are loaded ONCE at worker startup (outside handler) for speed.
-Each job receives a base64-encoded PDF and returns structured JSON.
-"""
-
 import runpod
 import base64
 import tempfile
 import os
+import sys
 import time
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-8s | %(message)s")
 log = logging.getLogger("bank_ai")
 
-# ── Pre-load models at container startup (once per warm worker) ────────────────
-log.info("Cold start: loading llama-cpp model + GLM-OCR...")
-from app.parser import _load_model, parse_header, parse_transactions
-from app.extractor import extract_text
-from app.categorizer import categorize_transactions
+_model_loaded = False
 
-_load_model()
-log.info("Models ready ✓")
+def ensure_model():
+    global _model_loaded
+    if _model_loaded:
+        return
+    
+    MODEL_PATH = os.getenv("MODEL_PATH")
+    if not MODEL_PATH or not os.path.exists(MODEL_PATH):
+        raise RuntimeError(f"Model not found at: {MODEL_PATH}. /runpod-volume contents: {os.listdir('/runpod-volume') if os.path.exists('/runpod-volume') else 'MISSING'}")
+    
+    log.info(f"Loading model from {MODEL_PATH}...")
+    from app.parser import _load_model
+    _load_model()
+    _model_loaded = True
+    log.info("Model loaded ✓")
 
-# ── Handler ────────────────────────────────────────────────────────────────────
 def handler(job):
     job_input = job.get("input", {})
     pdf_b64   = job_input.get("pdf_base64")
     filename  = job_input.get("filename", "statement.pdf")
 
     if not pdf_b64:
-        return {"error": "Missing 'pdf_base64' in input. Encode your PDF as base64."}
+        return {"error": "Missing 'pdf_base64' in input."}
+
+    try:
+        ensure_model()  # ← loads only once per warm worker
+    except RuntimeError as e:
+        return {"error": str(e)}
 
     t0 = time.time()
     pdf_bytes = base64.b64decode(pdf_b64)
@@ -40,18 +47,17 @@ def handler(job):
         tmp_path = tmp.name
 
     try:
-        # Stage 1: PDF extraction
+        from app.parser import parse_header, parse_transactions
+        from app.extractor import extract_text
+        from app.categorizer import categorize_transactions
+
         raw_text = extract_text(tmp_path)
         t1 = time.time()
-        log.info(f"Extracted {len(raw_text):,} chars in {t1-t0:.3f}s")
 
-        # Stage 2: LLM parsing (header + transactions)
         acc_details  = parse_header(raw_text)
         transactions = parse_transactions(raw_text)
         t2 = time.time()
-        log.info(f"LLM parsed {len(transactions)} txns in {t2-t1:.3f}s")
 
-        # Stage 3: Categorization
         transactions = categorize_transactions(transactions)
 
         debits  = [float(t["debit"])  for t in transactions if t.get("debit")  and str(t["debit"]).strip()]
@@ -78,6 +84,7 @@ def handler(job):
         log.error(f"Handler error: {e}", exc_info=True)
         return {"error": str(e)}
     finally:
-        os.unlink(tmp_path)
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 runpod.serverless.start({"handler": handler})
