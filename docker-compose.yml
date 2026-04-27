@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  bank-ai:
+    build: .
+    # Override CMD to run FastAPI instead of handler.py
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/workspace/app                        # live reload
+      - /path/to/your/models:/runpod-volume/models  # mount local models
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
