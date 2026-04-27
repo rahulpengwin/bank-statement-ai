@@ -33,4 +33,4 @@ ENV GLM_MAX_NEW_TOKENS=2048
 ENV GLM_DEVICE=cuda
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-CMD ["python", "-u", "handler.py"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
